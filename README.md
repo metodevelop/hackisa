@@ -2,7 +2,7 @@
 
 > **metoinc develop × hackisa** — интерактивный CLI для рутования Яндекс Станций
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue) ![Version](https://img.shields.io/badge/version-0.4.0-cyan) ![License](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/Python-3.8+-blue) ![Version](https://img.shields.io/badge/version-0.4.0-cyan) ![macOS](https://img.shields.io/badge/macOS-✓-white) ![Linux](https://img.shields.io/badge/Linux-✓-white) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ```
   ██    ██    ████      ██████  ██    ██  ██████    ██████    ████
@@ -48,10 +48,23 @@
 
 ## Быстрый старт
 
+### macOS
+
 ```bash
+brew install dnsmasq android-platform-tools
 cd ~/Desktop/lite-kit
 python3 hackisa
 ```
+
+### Linux (Debian/Ubuntu)
+
+```bash
+sudo apt install dnsmasq adb nmap
+cd ~/Desktop/lite-kit
+python3 hackisa
+```
+
+> Работает на macOS и Linux. Windows не поддерживается (нужен termios).
 
 ## Структура
 

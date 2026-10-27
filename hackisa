@@ -3,7 +3,10 @@
 hackisa — interactive CLI for rooting Yandex Stations.
 metoinc develop × hackisa
 """
-import os, sys, time, subprocess, shutil, socket, struct, re, signal, threading, termios, tty
+import os, sys, time, subprocess, shutil, socket, struct, re, signal, threading, termios, tty, platform
+
+IS_LINUX = platform.system() == "Linux"
+IS_MAC   = platform.system() == "Darwin"
 
 # ── themes ──
 THEMES = {
@@ -483,13 +486,35 @@ def show_station_art(station_id):
     print()
 
 
+def _get_arp_lines():
+    if IS_LINUX:
+        r = run("ip neigh show")
+    else:
+        r = run("arp -an")
+    return r.stdout.splitlines() if r.returncode == 0 else []
+
+def _get_gateway():
+    if IS_LINUX:
+        r = run("ip route show default")
+        if r.returncode == 0:
+            m = re.search(r'default via (\d+\.\d+\.\d+\.\d+)', r.stdout)
+            if m:
+                return m.group(1)
+    else:
+        r = run("route -n get default 2>/dev/null | grep gateway")
+        if r.returncode == 0:
+            m = re.search(r'(\d+\.\d+\.\d+\.\d+)', r.stdout)
+            if m:
+                return m.group(1)
+    return ""
+
 def show_network_map(my_ip, found_ips, subnet):
     """Show a visual network tree of found devices."""
+    host_label = "этот Mac" if IS_MAC else "этот ПК"
     print(f"  {WHITE}{BOLD}Карта сети {subnet}.0/24{RST}")
     print(f"  {GRAY}│{RST}")
-    print(f"  {GRAY}├── {GREEN}◉{RST} {WHITE}{my_ip}{RST} {DIM}(этот Mac){RST}")
-    r = run("arp -an")
-    arp_lines = r.stdout.splitlines() if r.returncode == 0 else []
+    print(f"  {GRAY}├── {GREEN}◉{RST} {WHITE}{my_ip}{RST} {DIM}({host_label}){RST}")
+    arp_lines = _get_arp_lines()
     for sip in found_ips:
         mac = "?"
         for line in arp_lines:
@@ -499,12 +524,7 @@ def show_network_map(my_ip, found_ips, subnet):
                     mac = m.group(1)
                 break
         print(f"  {GRAY}├── {CYAN}◉{RST} {WHITE}{sip}{RST} {DIM}({mac}){RST} {CYAN}← Станция{RST}")
-    gw_r = run("route -n get default 2>/dev/null | grep gateway")
-    gw = ""
-    if gw_r.returncode == 0:
-        gw_m = re.search(r'(\d+\.\d+\.\d+\.\d+)', gw_r.stdout)
-        if gw_m:
-            gw = gw_m.group(1)
+    gw = _get_gateway()
     if gw:
         print(f"  {GRAY}└── {YELLOW}◉{RST} {WHITE}{gw}{RST} {DIM}(роутер){RST}")
     else:
@@ -682,15 +702,16 @@ def healthcheck(ip, station):
 
 
 def get_local_ip():
-    try:
-        r = run("ipconfig getifaddr en0")
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip()
-        r = run("ipconfig getifaddr en1")
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip()
-    except:
-        pass
+    if IS_MAC:
+        try:
+            r = run("ipconfig getifaddr en0")
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+            r = run("ipconfig getifaddr en1")
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+        except:
+            pass
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -703,10 +724,11 @@ def get_local_ip():
 def find_station(subnet):
     """Scan subnet for Yandex Station (MAC b8:87:6e)."""
     spin = Spinner(f"сканирую {subnet}.0/24...").start()
+    ping_timeout = "-W1" if IS_LINUX else "-W150"
     procs = []
     for i in range(2, 255):
         p = subprocess.Popen(
-            ["ping", "-c1", "-W150", f"{subnet}.{i}"],
+            ["ping", "-c1", ping_timeout, f"{subnet}.{i}"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         procs.append(p)
@@ -714,10 +736,9 @@ def find_station(subnet):
         p.wait()
     time.sleep(0.5)
     spin.stop()
-    # check ARP
-    r = run("arp -an")
+    arp_lines = _get_arp_lines()
     ips = []
-    for line in r.stdout.splitlines():
+    for line in arp_lines:
         if "b8:87:6e" in line.lower():
             m = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
             if m:
@@ -1147,7 +1168,7 @@ def root_station():
     checks = {
         "python3": has("python3"),
         "adb":     has("adb"),
-        "dnsmasq": has("dnsmasq") or os.path.exists("/opt/homebrew/sbin/dnsmasq"),
+        "dnsmasq": has("dnsmasq") or (IS_MAC and os.path.exists("/opt/homebrew/sbin/dnsmasq")),
         "dig":     has("dig"),
     }
     all_ok = True
@@ -1203,9 +1224,15 @@ def root_station():
         info(f"прошивки можно найти на {CYAN}hackalice.me{RST} или в Telegram-чатах")
 
     if not checks["dnsmasq"]:
-        warn("dnsmasq не найден — brew install dnsmasq (нужен для стенда)")
+        if IS_LINUX:
+            warn("dnsmasq не найден — sudo apt install dnsmasq (нужен для стенда)")
+        else:
+            warn("dnsmasq не найден — brew install dnsmasq (нужен для стенда)")
     if not checks["adb"]:
-        err("установи adb: brew install android-platform-tools")
+        if IS_LINUX:
+            err("установи adb: sudo apt install adb")
+        else:
+            err("установи adb: brew install android-platform-tools")
         sys.exit(1)
 
     # ── 2. Start stand ──

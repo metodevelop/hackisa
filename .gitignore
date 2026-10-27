@@ -1,12 +1,15 @@
 log/
 run/
 frames/
+backups/
 *.log
 *.out
-firmware/*.zip
+firmware/**/*.zip
 __pycache__/
 .DS_Store
 certs/*.bak*
 lite-kit-diag-*.zip
 lite-kit-diag-*.tgz
 .diag-*/
+mitm-certs/
+mitm-dumps/

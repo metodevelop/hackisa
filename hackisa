@@ -1,0 +1,1502 @@
+#!/usr/bin/env python3
+"""
+hackisa — interactive CLI for rooting Yandex Stations.
+metoinc develop × hackisa
+"""
+import os, sys, time, subprocess, shutil, socket, struct, re, signal, threading, termios, tty
+
+# ── themes ──
+THEMES = {
+    "default": {"accent": "\033[96m", "hi": "\033[97m", "ok": "\033[92m", "warn": "\033[93m", "err": "\033[91m", "mag": "\033[95m"},
+    "hacker":  {"accent": "\033[92m", "hi": "\033[97m", "ok": "\033[92m", "warn": "\033[93m", "err": "\033[91m", "mag": "\033[92m"},
+    "sunset":  {"accent": "\033[38;5;208m", "hi": "\033[97m", "ok": "\033[38;5;208m", "warn": "\033[93m", "err": "\033[91m", "mag": "\033[38;5;205m"},
+    "minimal": {"accent": "\033[97m", "hi": "\033[97m", "ok": "\033[97m", "warn": "\033[93m", "err": "\033[91m", "mag": "\033[90m"},
+}
+THEME_NAMES = {"default": "Default (cyan)", "hacker": "Hacker (green)", "sunset": "Sunset (orange)", "minimal": "Minimal (mono)"}
+
+RST  = "\033[0m"
+BOLD = "\033[1m"
+DIM  = "\033[2m"
+GRAY  = "\033[90m"
+BLUE  = "\033[94m"
+BG_BLACK = "\033[40m"
+
+_current_theme = "default"
+
+def _apply_theme(name):
+    global _current_theme, WHITE, RED, GREEN, CYAN, YELLOW, MAG
+    _current_theme = name
+    t = THEMES[name]
+    CYAN   = t["accent"]
+    WHITE  = t["hi"]
+    GREEN  = t["ok"]
+    YELLOW = t["warn"]
+    RED    = t["err"]
+    MAG    = t["mag"]
+
+WHITE = "\033[97m"
+RED   = "\033[91m"
+GREEN = "\033[92m"
+CYAN  = "\033[96m"
+YELLOW = "\033[93m"
+MAG   = "\033[95m"
+
+# ── pixel art (metoinc × hackisa) ──
+F = "██"  # full
+H = "▓▓"  # highlight
+D = "░░"  # dim
+E = "  "  # empty
+
+def _grid(rows, color=WHITE, pad="  "):
+    out = [color]
+    for row in rows:
+        out.append(pad + "".join(F if c == "1" else E for c in row))
+    out.append(RST)
+    return "\n".join(out)
+
+# new mascot — meto "H" robot with antennae
+_MASCOT = [
+    "1000001",
+    "1000001",
+    "1100011",
+    "1101011",
+    "1111111",
+    "1101011",
+    "1100011",
+    "1000001",
+]
+BANNER = _grid(_MASCOT)
+
+# 5-row pixel font for the wordmark
+_FONT = {
+    "H": ["1001", "1001", "1111", "1001", "1001"],
+    "A": ["0110", "1001", "1111", "1001", "1001"],
+    "C": ["0111", "1000", "1000", "1000", "0111"],
+    "K": ["1001", "1010", "1100", "1010", "1001"],
+    "I": ["111",  "010",  "010",  "010",  "111"],
+    "S": ["0111", "1000", "0110", "0001", "1110"],
+}
+
+def _word(word, color=CYAN):
+    lines = [color + BOLD]
+    for r in range(5):
+        cells = [("".join(F if c == "1" else E for c in _FONT[ch][r])) for ch in word]
+        lines.append("  " + E.join(cells))
+    lines.append(RST)
+    return "\n".join(lines)
+
+TITLE = (
+    "\n" + _word("HACKISA") + "\n\n"
+    + f"  {DIM}metoinc develop · yandex station rootkit{RST}\n"
+)
+
+VERSION = "0.4.0"
+BASE = os.path.dirname(os.path.abspath(__file__))
+_stand_running = False
+
+# ── station catalog ──
+
+STATIONS = [
+    {
+        "id": "micro",
+        "name": "Станция Лайт 1",
+        "codename": "Micro",
+        "platform": "yandexmicro",
+        "method": "dns",
+        "status": "verified",
+        "mac": "b8:87:6e",
+        "led": True,
+        "notes": "LED-кольцо 3 зоны RGB, I2C-0/1",
+    },
+    {
+        "id": "plum",
+        "name": "Станция Лайт 2",
+        "codename": "Plum",
+        "platform": "yandexmicro2",
+        "method": "retail_ca",
+        "status": "verified",
+        "mac": "b8:87:6e",
+        "led": True,
+        "notes": "retail CA из factory раздела",
+    },
+    {
+        "id": "mini1",
+        "name": "Станция Мини 1",
+        "codename": "Mini",
+        "platform": "yandexmini",
+        "method": "dns",
+        "status": "verified",
+        "mac": "b8:87:6e",
+        "led": True,
+        "notes": "LED-кольцо, DNS-метод",
+    },
+    {
+        "id": "mini2",
+        "name": "Станция Мини 2",
+        "codename": "Mini 2",
+        "platform": "yandexmini2",
+        "method": "dns",
+        "status": "verified",
+        "mac": "b8:87:6e",
+        "led": True,
+        "notes": "LED-полоса, DNS-метод",
+    },
+    {
+        "id": "bergamot",
+        "name": "Станция Мини 3",
+        "codename": "Bergamot",
+        "platform": "yandexbergamot",
+        "method": "retail_ca",
+        "status": "verified",
+        "mac": "b8:87:6e",
+        "led": True,
+        "notes": "retail CA + маркеры из factory",
+    },
+    {
+        "id": "cucumber",
+        "name": "Станция Миди",
+        "codename": "Cucumber",
+        "platform": "yandexcucumber",
+        "method": "dns",
+        "status": "verified",
+        "mac": "b8:87:6e",
+        "led": True,
+        "notes": "LED-панель, DNS-метод",
+    },
+    {
+        "id": "station2",
+        "name": "Станция 2",
+        "codename": "Chiron",
+        "platform": "yandexstation2",
+        "method": "dns",
+        "status": "verified",
+        "mac": "b8:87:6e",
+        "led": True,
+        "notes": "LED-кольцо, DNS-метод",
+    },
+    {
+        "id": "mango",
+        "name": "Станция Стрит",
+        "codename": "Mango",
+        "platform": "yandexmango",
+        "method": "dns",
+        "status": "verified",
+        "mac": "b8:87:6e",
+        "led": False,
+        "notes": "DNS-метод, без RGB-подсветки",
+    },
+    {
+        "id": "saturn",
+        "name": "Умный хаб",
+        "codename": "Saturn",
+        "platform": "yandexsaturn",
+        "method": "dns",
+        "status": "verified",
+        "mac": "b8:87:6e",
+        "led": False,
+        "notes": "DNS-метод, экран",
+    },
+    {
+        "id": "station1",
+        "name": "Станция 1",
+        "codename": "Station",
+        "platform": "yandexstation",
+        "method": "alicebridge",
+        "status": "verified",
+        "mac": "b8:87:6e",
+        "led": True,
+        "notes": "AliceBridge (Android), LED-кольцо",
+    },
+    {
+        "id": "jbl",
+        "name": "JBL Link Music",
+        "codename": "JBL",
+        "platform": "jbllinkmusic",
+        "method": "usb_adb",
+        "status": "verified",
+        "mac": "",
+        "led": False,
+        "notes": "ADB по USB на старте",
+    },
+    {
+        "id": "orion",
+        "name": "Станция 3",
+        "codename": "Orion",
+        "platform": "yandexorion",
+        "method": "dns",
+        "status": "partial",
+        "mac": "b8:87:6e",
+        "led": True,
+        "notes": "DNS-метод закрыт, способ описан частично",
+    },
+    {
+        "id": "max",
+        "name": "Станция Макс",
+        "codename": "Max",
+        "platform": "yandexmax",
+        "method": "none",
+        "status": "no",
+        "mac": "b8:87:6e",
+        "led": True,
+        "notes": "Android, рут невозможен через стенд",
+    },
+]
+
+METHOD_NAMES = {
+    "dns":        "DNS-стенд (eQuasar)",
+    "retail_ca":  "retail CA из factory",
+    "alicebridge":"AliceBridge (Android)",
+    "usb_adb":    "ADB по USB",
+    "none":       "не поддерживается",
+}
+
+STATUS_ICONS = {
+    "verified": f"{GREEN}✓{RST}",
+    "partial":  f"{YELLOW}⚠{RST}",
+    "no":       f"{RED}✗{RST}",
+}
+
+# ── helpers ──
+
+def clear():
+    if sys.stdout.isatty():
+        os.system("clear" if os.name != "nt" else "cls")
+
+def pr(msg, prefix="*", color=CYAN):
+    print(f"  {color}{BOLD}[{prefix}]{RST} {msg}")
+
+def ok(msg):
+    pr(msg, "✓", GREEN)
+
+def warn(msg):
+    pr(msg, "!", YELLOW)
+
+def err(msg):
+    pr(msg, "✗", RED)
+
+def info(msg):
+    pr(msg, "·", GRAY)
+
+def step(n, total, msg):
+    width = 20
+    filled = int(width * n / total)
+    pct = int(100 * n / total)
+    bar = f"{CYAN}{'█' * filled}{GRAY}{'░' * (width - filled)}{RST}"
+    print(f"\n  {bar} {WHITE}{BOLD}{pct}%{RST}  {WHITE}[{n}/{total}]{RST} {msg}\n")
+
+def ask(prompt, default="y"):
+    hint = "Y/n" if default == "y" else "y/N"
+    r = input(f"  {GRAY}[?]{RST} {prompt} [{hint}]: ").strip().lower()
+    if not r:
+        return default == "y"
+    return r in ("y", "yes", "д", "да")
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=kw.get("timeout", 30), **{k:v for k,v in kw.items() if k != "timeout"})
+
+def run_show(cmd, **kw):
+    return subprocess.run(cmd, shell=True, timeout=kw.get("timeout", 120))
+
+def has(cmd):
+    return shutil.which(cmd) is not None
+
+
+def stop_stand():
+    global _stand_running
+    if not _stand_running:
+        return
+    info("останавливаю стенд...")
+    r = run(f"sudo {BASE}/stop.sh")
+    if r.returncode == 0:
+        ok("стенд остановлен")
+    else:
+        warn("не удалось остановить стенд — попробуй вручную: sudo ./stop.sh")
+    _stand_running = False
+
+# ── spinner ──
+
+class Spinner:
+    """Braille spinner for long operations."""
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, msg=""):
+        self.msg = msg
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _spin(self):
+        i = 0
+        while not self._stop.is_set():
+            frame = self.FRAMES[i % len(self.FRAMES)]
+            sys.stdout.write(f"\r  {CYAN}{frame}{RST} {self.msg}")
+            sys.stdout.flush()
+            i += 1
+            time.sleep(0.08)
+        sys.stdout.write("\r" + " " * (len(self.msg) + 6) + "\r")
+        sys.stdout.flush()
+
+    def start(self):
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join()
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *_):
+        self.stop()
+
+
+# ── ASCII art for stations ──
+
+STATION_ART = {
+    "micro": [  # Лайт — маленький цилиндр
+        "   ╭───╮   ",
+        "   │ ○ │   ",
+        "   │   │   ",
+        "   ╰───╯   ",
+        "   ╰═══╯   ",
+    ],
+    "plum": [  # Лайт 2
+        "   ╭───╮   ",
+        "   │ ◉ │   ",
+        "   │   │   ",
+        "   ╰───╯   ",
+        "   ╰═══╯   ",
+    ],
+    "mini1": [  # Мини — широкий диск
+        "  ╭─────╮  ",
+        "  │ ◦◦◦ │  ",
+        "  ╰─────╯  ",
+        "  ╰═════╯  ",
+    ],
+    "mini2": [  # Мини 2
+        "  ╭─────╮  ",
+        "  │ ═══ │  ",
+        "  ╰─────╯  ",
+        "  ╰═════╯  ",
+    ],
+    "bergamot": [  # Мини 3
+        "  ╭─────╮  ",
+        "  │ ▪▪▪ │  ",
+        "  ╰─────╯  ",
+        "  ╰═════╯  ",
+    ],
+    "cucumber": [  # Миди — средний цилиндр
+        "  ╭─────╮  ",
+        "  │     │  ",
+        "  │ ▓▓▓ │  ",
+        "  │     │  ",
+        "  ╰─────╯  ",
+        "  ╰═════╯  ",
+    ],
+    "station1": [  # Станция 1 — высокий куб
+        " ╭───────╮ ",
+        " │       │ ",
+        " │  ◉◉◉  │ ",
+        " │       │ ",
+        " │       │ ",
+        " ╰───────╯ ",
+    ],
+    "station2": [  # Станция 2
+        " ╭───────╮ ",
+        " │       │ ",
+        " │  ◎◎◎  │ ",
+        " │       │ ",
+        " ╰───────╯ ",
+        " ╰═══════╯ ",
+    ],
+    "orion": [  # Станция 3
+        " ╭───────╮ ",
+        " │ ┌───┐ │ ",
+        " │ │ ◉ │ │ ",
+        " │ └───┘ │ ",
+        " ╰───────╯ ",
+    ],
+    "max": [  # Макс — большой
+        "╭─────────╮",
+        "│         │",
+        "│  ◉   ◉  │",
+        "│         │",
+        "│  ▓▓▓▓▓  │",
+        "│         │",
+        "╰─────────╯",
+    ],
+    "mango": [  # Стрит — горизонтальный
+        "╭─────────────╮",
+        "│  ◦  СТРИТ   │",
+        "╰─────────────╯",
+    ],
+    "saturn": [  # Хаб — с экраном
+        " ╭───────╮ ",
+        " │ ┌───┐ │ ",
+        " │ │▒▒▒│ │ ",
+        " │ └───┘ │ ",
+        " ╰───────╯ ",
+    ],
+    "jbl": [  # JBL
+        "  ╭─────╮  ",
+        "  │ JBL │  ",
+        "  │  ◦  │  ",
+        "  ╰─────╯  ",
+    ],
+}
+
+
+STATION_ART_FILES = {
+    "micro":    "01-lite.ans",
+    "plum":     "02-lite2.ans",
+    "mini1":    "04-mini.ans",
+    "mini2":    "05-mini-clock.ans",
+    "bergamot": "06-mini3.ans",
+    "cucumber": "08-midi.ans",
+    "station1": "09-station2.ans",
+    "station2": "09-station2.ans",
+    "orion":    "10-station3.ans",
+    "max":      "11-max.ans",
+    "mango":    "13-street.ans",
+    "saturn":   "09-station2.ans",
+    "jbl":      "13-street.ans",
+}
+
+ART_DIR = os.path.join(os.path.dirname(BASE), "ascii-station", "art")
+
+def show_station_art(station_id):
+    fname = STATION_ART_FILES.get(station_id)
+    if fname:
+        art_path = os.path.join(ART_DIR, fname)
+        if os.path.exists(art_path):
+            with open(art_path, "r") as f:
+                print(f.read())
+            return
+    art = STATION_ART.get(station_id)
+    if not art:
+        return
+    for line in art:
+        print(f"  {CYAN}{line}{RST}")
+    print()
+
+
+def show_network_map(my_ip, found_ips, subnet):
+    """Show a visual network tree of found devices."""
+    print(f"  {WHITE}{BOLD}Карта сети {subnet}.0/24{RST}")
+    print(f"  {GRAY}│{RST}")
+    print(f"  {GRAY}├── {GREEN}◉{RST} {WHITE}{my_ip}{RST} {DIM}(этот Mac){RST}")
+    r = run("arp -an")
+    arp_lines = r.stdout.splitlines() if r.returncode == 0 else []
+    for sip in found_ips:
+        mac = "?"
+        for line in arp_lines:
+            if sip in line:
+                m = re.search(r'([\da-f:]{11,17})', line, re.IGNORECASE)
+                if m:
+                    mac = m.group(1)
+                break
+        print(f"  {GRAY}├── {CYAN}◉{RST} {WHITE}{sip}{RST} {DIM}({mac}){RST} {CYAN}← Станция{RST}")
+    gw_r = run("route -n get default 2>/dev/null | grep gateway")
+    gw = ""
+    if gw_r.returncode == 0:
+        gw_m = re.search(r'(\d+\.\d+\.\d+\.\d+)', gw_r.stdout)
+        if gw_m:
+            gw = gw_m.group(1)
+    if gw:
+        print(f"  {GRAY}└── {YELLOW}◉{RST} {WHITE}{gw}{RST} {DIM}(роутер){RST}")
+    else:
+        print(f"  {GRAY}└── {DIM}...{RST}")
+    print()
+
+
+def checkbox_select(items, defaults=None):
+    """Interactive checkbox selection with arrow keys."""
+    if not sys.stdin.isatty():
+        return defaults or [True] * len(items)
+
+    selected = list(defaults) if defaults else [True] * len(items)
+    cursor = 0
+
+    def render():
+        sys.stdout.write(f"\033[{len(items) + 1}A")
+        print(f"  {DIM}↑↓ навигация  Пробел — переключить  Enter — готово{RST}")
+        for i, (label, _) in enumerate(items):
+            check = f"{GREEN}✓{RST}" if selected[i] else f"{GRAY}·{RST}"
+            pointer = f"{WHITE}{BOLD}›{RST}" if i == cursor else " "
+            highlight = WHITE + BOLD if i == cursor else ""
+            print(f"  {pointer} [{check}] {highlight}{label}{RST}")
+
+    print(f"  {DIM}↑↓ навигация  Пробел — переключить  Enter — готово{RST}")
+    for i, (label, _) in enumerate(items):
+        check = f"{GREEN}✓{RST}" if selected[i] else f"{GRAY}·{RST}"
+        pointer = f"{WHITE}{BOLD}›{RST}" if i == cursor else " "
+        print(f"  {pointer} [{check}] {label}{RST}")
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == "\r" or ch == "\n":
+                break
+            if ch == " ":
+                selected[cursor] = not selected[cursor]
+                render()
+            elif ch == "\x1b":
+                ch2 = sys.stdin.read(1)
+                if ch2 == "[":
+                    ch3 = sys.stdin.read(1)
+                    if ch3 == "A" and cursor > 0:
+                        cursor -= 1
+                        render()
+                    elif ch3 == "B" and cursor < len(items) - 1:
+                        cursor += 1
+                        render()
+            elif ch == "\x03":
+                raise KeyboardInterrupt
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    print()
+    return selected
+
+
+KNOWN_PATCHED = ["2.7", "2.8", "2.9", "3."]
+
+def check_firmware_risk(version_str):
+    """Check if firmware version might be patched against root exploit."""
+    for prefix in KNOWN_PATCHED:
+        if version_str.startswith(prefix):
+            return True
+    return False
+
+
+def backup_station(ip, station_name):
+    """Backup critical partitions before modifying."""
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    backup_dir = os.path.join(BASE, "backups", f"{station_name}_{ts}")
+    os.makedirs(backup_dir, exist_ok=True)
+
+    targets = [
+        "/system/vendor/quasar/",
+        "/persist/",
+    ]
+    for t in targets:
+        dest_name = t.strip("/").replace("/", "_")
+        info(f"бэкап {t} ...")
+        r = run(f"adb -s {ip}:5555 pull {t} {os.path.join(backup_dir, dest_name)}", timeout=60)
+        if r.returncode == 0:
+            ok(f"  → {dest_name}")
+        else:
+            warn(f"  не удалось: {t}")
+
+    ok(f"бэкап сохранён в {os.path.relpath(backup_dir, BASE)}/")
+    return backup_dir
+
+
+class SessionLogger:
+    """Tee stdout to a log file."""
+    def __init__(self, path):
+        self.terminal = sys.stdout
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.log = open(path, "w")
+        self.ansi_re = re.compile(r'\033\[[0-9;]*m')
+
+    def write(self, msg):
+        self.terminal.write(msg)
+        self.log.write(self.ansi_re.sub("", msg))
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+    def isatty(self):
+        return self.terminal.isatty()
+
+    def fileno(self):
+        return self.terminal.fileno()
+
+    def close(self):
+        sys.stdout = self.terminal
+        self.log.close()
+
+
+def healthcheck(ip, station):
+    """Verify root state after setup."""
+    print()
+    info("проверяю состояние станции...")
+    print()
+    all_ok = True
+
+    # ADB
+    r = run(f"adb -s {ip}:5555 shell id")
+    if "root" in r.stdout:
+        ok("ADB root ✓")
+    else:
+        err("ADB не root")
+        all_ok = False
+
+    # ADB marker
+    r = run(f"adb -s {ip}:5555 shell ls /persist/adbd")
+    if r.returncode == 0:
+        ok("ADB маркер ✓")
+    else:
+        warn("ADB маркер не найден")
+
+    # dropbear
+    r = run(f"adb -s {ip}:5555 shell pidof dropbear")
+    if r.stdout.strip():
+        ok("Dropbear SSH работает ✓")
+    else:
+        warn("Dropbear не запущен")
+
+    # updates blocked
+    r = run(f"adb -s {ip}:5555 shell ls /usr/bin/updatesd 2>/dev/null")
+    if r.returncode != 0:
+        ok("обновления заблокированы ✓")
+    else:
+        warn("updatesd всё ещё на месте")
+
+    # LED panel (if applicable)
+    if station.get("led"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect((ip, 8080))
+            s.close()
+            ok("LED-панель доступна ✓")
+        except:
+            warn("LED-панель не отвечает на :8080")
+
+    print()
+    if all_ok:
+        ok("всё в порядке!")
+    else:
+        warn("есть проблемы — проверь логи")
+    return all_ok
+
+
+def get_local_ip():
+    try:
+        r = run("ipconfig getifaddr en0")
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+        r = run("ipconfig getifaddr en1")
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return None
+
+def find_station(subnet):
+    """Scan subnet for Yandex Station (MAC b8:87:6e)."""
+    spin = Spinner(f"сканирую {subnet}.0/24...").start()
+    procs = []
+    for i in range(2, 255):
+        p = subprocess.Popen(
+            ["ping", "-c1", "-W150", f"{subnet}.{i}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        procs.append(p)
+    for p in procs:
+        p.wait()
+    time.sleep(0.5)
+    spin.stop()
+    # check ARP
+    r = run("arp -an")
+    ips = []
+    for line in r.stdout.splitlines():
+        if "b8:87:6e" in line.lower():
+            m = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+            if m:
+                ips.append(m.group(1))
+    return ips
+
+def adb_connect(ip):
+    run(f"adb start-server")
+    r = run(f"adb connect {ip}:5555")
+    time.sleep(1)
+    r2 = run(f"adb -s {ip}:5555 shell id")
+    return "root" in r2.stdout
+
+def wait_adb(ip, timeout=300):
+    """Wait for ADB port to open."""
+    tips = [
+        "станция должна быть подключена к Wi-Fi стенда",
+        "если станция мигает — она ещё грузится, подожди",
+        "попробуй перезагрузить станцию если дольше 3 минут",
+        "убедись что dnsmasq отдаёт правильный IP",
+        "Ctrl+C чтобы отменить и остановить стенд",
+    ]
+    start = time.time()
+    dots = 0
+    next_tip = 30
+    tip_idx = 0
+    while time.time() - start < timeout:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect((ip, 5555))
+            s.close()
+            return True
+        except:
+            pass
+        dots += 1
+        elapsed = int(time.time() - start)
+        frame = Spinner.FRAMES[dots % len(Spinner.FRAMES)]
+        sys.stdout.write(f"\r  {CYAN}{frame}{RST} жду ADB на {ip}:5555 ({elapsed}s) {'.' * (dots % 4)}   ")
+        sys.stdout.flush()
+        if elapsed >= next_tip and tip_idx < len(tips):
+            print(f"\n  {DIM}💡 {tips[tip_idx]}{RST}")
+            tip_idx += 1
+            next_tip += 45
+        time.sleep(3)
+    print()
+    return False
+
+def tail_log(path, stop_event):
+    """Tail a log file in background."""
+    try:
+        with open(path, "r") as f:
+            f.seek(0, 2)
+            while not stop_event.is_set():
+                line = f.readline()
+                if line:
+                    line = line.strip()
+                    if any(k in line.lower() for k in ["error", "fail", "exception"]):
+                        print(f"    {RED}{line}{RST}")
+                    elif any(k in line.lower() for k in ["sync", "adb", "ota", "firmware", "connect"]):
+                        print(f"    {CYAN}{line}{RST}")
+                    else:
+                        print(f"    {DIM}{line}{RST}")
+                else:
+                    time.sleep(0.5)
+    except:
+        pass
+
+
+# ═══════════════════════════════════════════
+#  MAIN
+# ═══════════════════════════════════════════
+
+def choose_station():
+    """Interactive station selector."""
+    print(f"\n  {WHITE}{BOLD}Выбери свою станцию:{RST}\n")
+
+    dns_stations = [s for s in STATIONS if s["method"] == "dns"]
+    other_stations = [s for s in STATIONS if s["method"] not in ("dns", "none")]
+    no_stations = [s for s in STATIONS if s["method"] == "none"]
+
+    idx = 1
+    index_map = {}
+
+    print(f"  {CYAN}{BOLD}── DNS-стенд (eQuasar) ──{RST}")
+    for s in dns_stations:
+        icon = STATUS_ICONS.get(s["status"], "?")
+        led_tag = f" {MAG}LED{RST}" if s["led"] else ""
+        print(f"    {WHITE}{idx:2d}{RST}. {icon} {WHITE}{s['name']}{RST} {DIM}({s['codename']}){RST}{led_tag}")
+        index_map[idx] = s
+        idx += 1
+
+    print(f"\n  {YELLOW}{BOLD}── Другие методы ──{RST}")
+    for s in other_stations:
+        icon = STATUS_ICONS.get(s["status"], "?")
+        method = METHOD_NAMES.get(s["method"], s["method"])
+        led_tag = f" {MAG}LED{RST}" if s["led"] else ""
+        print(f"    {WHITE}{idx:2d}{RST}. {icon} {WHITE}{s['name']}{RST} {DIM}({method}){RST}{led_tag}")
+        index_map[idx] = s
+        idx += 1
+
+    if no_stations:
+        print(f"\n  {RED}{BOLD}── Не поддерживается ──{RST}")
+        for s in no_stations:
+            print(f"    {DIM} —  {s['name']} ({s['notes']}){RST}")
+
+    print()
+    while True:
+        choice = input(f"  {GRAY}[?]{RST} номер станции (1-{idx-1}): ").strip()
+        if choice.isdigit() and int(choice) in index_map:
+            station = index_map[int(choice)]
+            break
+        err("неверный номер")
+
+    print()
+    show_station_art(station["id"])
+    ok(f"{WHITE}{station['name']}{RST} {DIM}({station['codename']}){RST}")
+    info(f"метод: {WHITE}{METHOD_NAMES.get(station['method'], station['method'])}{RST}")
+    info(f"платформа: {WHITE}{station['platform']}{RST}")
+    if station["notes"]:
+        info(f"{station['notes']}")
+
+    if station["status"] == "no":
+        err("эта станция не поддерживается для рута через стенд")
+        sys.exit(1)
+
+    if station["status"] == "partial":
+        warn("поддержка частичная — метод может не работать")
+        if not ask("продолжить?", "n"):
+            sys.exit(0)
+
+    if station["method"] == "retail_ca":
+        warn("для этой станции нужен retail CA из factory раздела")
+        info("подробности: https://hackalice.me")
+        info("DNS-стенд будет запущен, но может понадобиться ручная настройка")
+
+    if station["method"] == "alicebridge":
+        warn("для Станции 1 используется AliceBridge")
+        info("подробности: https://hackalice.me")
+        info("стенд можно использовать, но метод отличается")
+
+    if station["method"] == "usb_adb":
+        warn("ADB доступен по USB — стенд не нужен")
+        info("подключи станцию по USB и выполни: adb shell")
+        if not ask("продолжить с DNS-стендом всё равно?", "n"):
+            sys.exit(0)
+
+    print()
+    return station
+
+
+def change_theme():
+    clear()
+    print(BANNER)
+    print(TITLE)
+    print(f"  {WHITE}{BOLD}Тема оформления{RST}\n")
+    print(f"  {DIM}текущая: {THEME_NAMES[_current_theme]}{RST}\n")
+
+    for i, (key, label) in enumerate(THEME_NAMES.items(), 1):
+        t = THEMES[key]
+        marker = f" {GREEN}◀{RST}" if key == _current_theme else ""
+        sample = f"{t['accent']}██{t['ok']}██{t['warn']}██{t['err']}██{RST}"
+        print(f"    {WHITE}{BOLD}{i}{RST}. {WHITE}{label}{RST}  {sample}{marker}")
+
+    print()
+    choice = input(f"  {GRAY}[?]{RST} выбери тему (1-4): ").strip()
+    keys = list(THEME_NAMES.keys())
+    if choice.isdigit() and 1 <= int(choice) <= 4:
+        _apply_theme(keys[int(choice) - 1])
+        ok(f"тема: {THEME_NAMES[_current_theme]}")
+    else:
+        warn("неверный номер")
+    input(f"\n  {GRAY}[Enter]{RST} назад в меню ")
+
+
+def show_about():
+    clear()
+    print(BANNER)
+    print(TITLE)
+    print(f"""
+  {WHITE}{BOLD}О программе{RST}
+
+  {CYAN}hackisa{RST} — графическая обёртка над {WHITE}lite-kit{RST} (eQuasar стенд)
+  для рутования Яндекс Станций через DNS-перехват.
+
+  {WHITE}Как это работает:{RST}
+  Стенд поднимает фейковый DNS + HTTPS-сервер, станция
+  думает что говорит с Яндексом, получает sync с adbd=true,
+  открывает ADB — и мы получаем root.
+
+  {WHITE}Основано на:{RST}
+  {CYAN}→{RST} hackalice.me — полный гайд по рутованию
+  {CYAN}→{RST} lite-kit (eQuasar) — DNS-стенд и скрипты
+  {CYAN}→{RST} yandex-station-extended — dropbear, yse, утилиты
+
+  {WHITE}Поддерживаемые станции:{RST}
+  Лайт 1/2, Мини 1/2/3, Миди, Станция 1/2/3, Стрит,
+  Умный хаб, JBL Link Music
+
+  {WHITE}Версия:{RST}  {CYAN}{VERSION}{RST}
+  {WHITE}Автор:{RST}   {CYAN}metoinc develop{RST}
+  {WHITE}Лицензия:{RST} MIT
+
+  {DIM}hackisa — это GUI. Вся магия внутри lite-kit.{RST}
+  {DIM}Подробности и пошаговый гайд: hackalice.me{RST}
+""")
+    input(f"  {GRAY}[Enter]{RST} назад в меню ")
+
+
+def show_menu():
+    clear()
+    print(BANNER)
+    print(TITLE)
+
+    ip = get_local_ip()
+    info(f"твой IP: {WHITE}{ip}{RST}")
+    print()
+
+    items = [
+        ("Рутовать станцию",        "полный пайплайн: стенд → ADB → root → пост-рут"),
+        ("Подключиться к станции",   "SSH/ADB + быстрые команды"),
+        ("Каталог станций",          "список поддерживаемых моделей и методов"),
+        ("Тема оформления",          f"сейчас: {THEME_NAMES[_current_theme]}"),
+        ("О программе",              "что это, как работает, ссылки"),
+    ]
+
+    for i, (label, desc) in enumerate(items, 1):
+        print(f"    {WHITE}{BOLD}{i}{RST}. {WHITE}{label}{RST}")
+        print(f"       {DIM}{desc}{RST}")
+
+    print(f"\n    {WHITE}{BOLD}0{RST}. {RED}Выход{RST}")
+    print()
+
+    while True:
+        choice = input(f"  {GRAY}[?]{RST} выбери пункт: ").strip()
+        if choice in ("0", "q", "й"):
+            print(f"\n  {DIM}metoinc develop × hackisa{RST}\n")
+            sys.exit(0)
+        if choice in ("1", "2", "3", "4", "5"):
+            return int(choice)
+        err("неверный пункт")
+
+
+def show_catalog():
+    clear()
+    print(f"\n  {WHITE}{BOLD}Каталог станций{RST}\n")
+
+    dns_stations = [s for s in STATIONS if s["method"] == "dns"]
+    other_stations = [s for s in STATIONS if s["method"] not in ("dns", "none")]
+    no_stations = [s for s in STATIONS if s["method"] == "none"]
+
+    print(f"  {CYAN}{BOLD}── DNS-стенд (eQuasar) ──{RST}")
+    for s in dns_stations:
+        icon = STATUS_ICONS.get(s["status"], "?")
+        led_tag = f" {MAG}LED{RST}" if s["led"] else ""
+        print(f"    {icon} {WHITE}{s['name']}{RST} {DIM}({s['codename']}){RST}{led_tag}")
+        print(f"      {DIM}{s['notes']}{RST}")
+
+    print(f"\n  {YELLOW}{BOLD}── Другие методы ──{RST}")
+    for s in other_stations:
+        icon = STATUS_ICONS.get(s["status"], "?")
+        method = METHOD_NAMES.get(s["method"], s["method"])
+        led_tag = f" {MAG}LED{RST}" if s["led"] else ""
+        print(f"    {icon} {WHITE}{s['name']}{RST} {DIM}({method}){RST}{led_tag}")
+        print(f"      {DIM}{s['notes']}{RST}")
+
+    if no_stations:
+        print(f"\n  {RED}{BOLD}── Не поддерживается ──{RST}")
+        for s in no_stations:
+            print(f"    {RED}✗{RST} {DIM}{s['name']} — {s['notes']}{RST}")
+
+    print()
+    input(f"  {GRAY}[Enter]{RST} назад в меню ")
+
+
+SSH_COMMANDS = [
+    ("Shell (интерактивный)",     None),
+    ("Перезагрузить станцию",     "reboot"),
+    ("Посмотреть логи Quasar",    "tail -f /var/log/quasar/quasar.log"),
+    ("Статус сервисов",           "ps | grep -E 'quasar|dropbear|dnsmasq|aliced'"),
+    ("Свободное место",           "df -h"),
+    ("Uptime и нагрузка",         "uptime"),
+    ("Версия прошивки",           "cat /system/vendor/quasar/version_full"),
+    ("Перезапустить LED-панель",   "/etc/init.d/S99zledpanel restart"),
+    ("Перезапустить Dropbear",     "/etc/init.d/S99zdropbear restart"),
+]
+
+
+def connect_existing():
+    """Connect to an already rooted station."""
+    clear()
+    print(f"\n  {WHITE}{BOLD}Подключение к станции{RST}\n")
+
+    ip = get_local_ip()
+    subnet = ".".join(ip.split(".")[:3]) if ip else None
+
+    station_ip = input(f"  {GRAY}[?]{RST} IP станции (или Enter для скана): ").strip()
+
+    if not station_ip and subnet:
+        stations = find_station(subnet)
+        if stations:
+            station_ip = stations[0]
+            ok(f"нашёл: {WHITE}{station_ip}{RST}")
+        else:
+            err("станция не найдена")
+            input(f"\n  {GRAY}[Enter]{RST} назад в меню ")
+            return
+
+    if not station_ip:
+        err("не указан IP")
+        input(f"\n  {GRAY}[Enter]{RST} назад в меню ")
+        return
+
+    # detect connection method
+    print()
+    use_ssh = False
+    use_adb = False
+    info(f"пробую SSH на {station_ip}:2222...")
+    r = run(f"ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -p 2222 root@{station_ip} 'echo OK'", timeout=10)
+    if r.returncode == 0:
+        ok("SSH доступен")
+        use_ssh = True
+    else:
+        info(f"пробую ADB на {station_ip}:5555...")
+        if adb_connect(station_ip):
+            ok("ADB подключён")
+            use_adb = True
+
+    if not use_ssh and not use_adb:
+        err(f"не удалось подключиться к {station_ip}")
+        info("убедись что станция в сети и рутована")
+        input(f"\n  {GRAY}[Enter]{RST} назад в меню ")
+        return
+
+    method = "SSH" if use_ssh else "ADB"
+    while True:
+        print(f"\n  {WHITE}{BOLD}Быстрые команды{RST} {DIM}({method} → {station_ip}){RST}\n")
+
+        for i, (label, _) in enumerate(SSH_COMMANDS, 1):
+            print(f"    {WHITE}{BOLD}{i:2d}{RST}. {label}")
+        print(f"\n    {WHITE}{BOLD} 0{RST}. {DIM}Назад в меню{RST}")
+        print()
+
+        choice = input(f"  {GRAY}[?]{RST} команда: ").strip()
+        if choice in ("0", "q", "й", ""):
+            return
+        if not choice.isdigit() or int(choice) < 1 or int(choice) > len(SSH_COMMANDS):
+            err("неверный номер")
+            continue
+
+        label, cmd = SSH_COMMANDS[int(choice) - 1]
+        print()
+
+        if cmd is None:
+            info(f"открываю shell...")
+            print()
+            if use_ssh:
+                os.system(f"ssh -p 2222 -o StrictHostKeyChecking=no root@{station_ip}")
+            else:
+                os.system(f"adb -s {station_ip}:5555 shell")
+        elif cmd == "reboot":
+            if not ask("точно перезагрузить?", "n"):
+                continue
+            info("перезагрузка...")
+            if use_ssh:
+                run(f"ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -p 2222 root@{station_ip} '{cmd}'", timeout=10)
+            else:
+                run(f"adb -s {station_ip}:5555 shell {cmd}")
+            ok("команда отправлена")
+        else:
+            info(f"выполняю: {WHITE}{cmd}{RST}")
+            print()
+            if use_ssh:
+                os.system(f"ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -p 2222 root@{station_ip} '{cmd}'")
+            else:
+                os.system(f"adb -s {station_ip}:5555 shell {cmd}")
+
+        print()
+        input(f"  {GRAY}[Enter]{RST} продолжить ")
+
+
+def main():
+    while True:
+        choice = show_menu()
+
+        if choice == 1:
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            log_file = os.path.join(BASE, "log", f"root_{ts}.log")
+            logger = SessionLogger(log_file)
+            sys.stdout = logger
+            try:
+                root_station()
+            except KeyboardInterrupt:
+                print(f"\n  {YELLOW}[!]{RST} отменено")
+                stop_stand()
+            finally:
+                logger.close()
+                info(f"лог сессии: {os.path.relpath(log_file, BASE)}")
+        elif choice == 2:
+            connect_existing()
+        elif choice == 3:
+            show_catalog()
+        elif choice == 4:
+            change_theme()
+        elif choice == 5:
+            show_about()
+
+
+def root_station():
+    """Full root pipeline."""
+    global _stand_running
+    clear()
+    print(BANNER)
+    print(TITLE)
+    print(f"  {WHITE}{BOLD}Рутование станции{RST}\n")
+
+    ip = get_local_ip()
+    info(f"твой IP: {WHITE}{ip}{RST}")
+
+    station = choose_station()
+
+    TOTAL = 7
+
+    # ── 1. Check environment ──
+    step(1, TOTAL, "проверка окружения")
+
+    checks = {
+        "python3": has("python3"),
+        "adb":     has("adb"),
+        "dnsmasq": has("dnsmasq") or os.path.exists("/opt/homebrew/sbin/dnsmasq"),
+        "dig":     has("dig"),
+    }
+    all_ok = True
+    for name, found in checks.items():
+        if found:
+            ok(f"{name}")
+        else:
+            err(f"{name} не найден")
+            all_ok = False
+
+    fw_dir = os.path.join(BASE, "firmware")
+    platform = station["platform"]
+    platform_fw_dir = os.path.join(fw_dir, platform)
+    fw_file = None
+
+    if os.path.isdir(platform_fw_dir):
+        for f in os.listdir(platform_fw_dir):
+            if f.endswith(".zip"):
+                fw_file = os.path.join(platform_fw_dir, f)
+                break
+
+    if fw_file:
+        ok(f"прошивка для {WHITE}{platform}{RST}: {os.path.basename(fw_file)}")
+        manifest_path = os.path.join(platform_fw_dir, "manifest.json")
+        if os.path.exists(manifest_path):
+            import json as _json
+            try:
+                mf = _json.load(open(manifest_path))
+                if mf.get("platform") != platform:
+                    warn(f"manifest.json указывает на {mf.get('platform')}, а не {platform}!")
+                else:
+                    info(f"версия: {WHITE}{mf.get('version', '?')}{RST}  размер: {WHITE}{mf.get('size', 0) // 1048576} МБ{RST}")
+            except:
+                pass
+    else:
+        # check if there's firmware for another platform
+        other_fw = []
+        if os.path.isdir(fw_dir):
+            for d in os.listdir(fw_dir):
+                sub = os.path.join(fw_dir, d)
+                if os.path.isdir(sub) and d != platform:
+                    for f in os.listdir(sub):
+                        if f.endswith(".zip"):
+                            other_fw.append(d)
+                            break
+        if other_fw:
+            warn(f"прошивка для {WHITE}{platform}{RST} не найдена!")
+            warn(f"есть прошивки для: {WHITE}{', '.join(other_fw)}{RST} — они НЕ подходят для {station['name']}")
+        else:
+            warn("прошивка не найдена в firmware/")
+        info(f"скачай прошивку для {WHITE}{platform}{RST} и положи в:")
+        info(f"  {WHITE}firmware/{platform}/<версия>.zip{RST}")
+        info(f"прошивки можно найти на {CYAN}hackalice.me{RST} или в Telegram-чатах")
+
+    if not checks["dnsmasq"]:
+        warn("dnsmasq не найден — brew install dnsmasq (нужен для стенда)")
+    if not checks["adb"]:
+        err("установи adb: brew install android-platform-tools")
+        sys.exit(1)
+
+    # ── 2. Start stand ──
+    step(2, TOTAL, "запуск стенда (DNS + eQuasar)")
+
+    info("поднимаю DNS-перехват и HTTPS-сервер..")
+    print(f"    {DIM}quasar.yandex.net → {ip}{RST}")
+    print(f"    {DIM}quasar.yandex.ru  → {ip}{RST}")
+    print(f"    {DIM}scbh.yandex.net   → {ip}{RST}")
+    print()
+
+    if not ask("запустить стенд? (нужен sudo)"):
+        warn("пропускаю запуск стенда")
+    else:
+        log_path = os.path.join(BASE, "log", "server.log")
+        os.makedirs(os.path.join(BASE, "log"), exist_ok=True)
+        try:
+            with open(log_path, "w") as f:
+                pass
+        except PermissionError:
+            run(f"sudo chmod 666 {log_path}")
+            with open(log_path, "w") as f:
+                pass
+
+        r = run_show(f"sudo {BASE}/start.sh", timeout=30)
+        if r.returncode == 0:
+            _stand_running = True
+            ok("стенд запущен")
+        else:
+            err("ошибка при запуске стенда")
+            if not ask("продолжить всё равно?", "n"):
+                sys.exit(1)
+
+    # ── 3. Find station ──
+    step(3, TOTAL, "поиск станции в сети")
+
+    subnet = ".".join(ip.split(".")[:3]) if ip else None
+    if not subnet:
+        err("не могу определить подсеть")
+        sys.exit(1)
+
+    station_ip = None
+    stations = find_station(subnet)
+
+    if stations:
+        show_network_map(ip, stations, subnet)
+        for sip in stations:
+            ok(f"нашёл: {WHITE}{sip}{RST}")
+        station_ip = stations[0]
+    else:
+        warn("станция не найдена по MAC")
+        manual = input(f"  {GRAY}[?]{RST} введи IP станции (или Enter для повторного скана): ").strip()
+        if manual:
+            station_ip = manual
+        else:
+            warn("жду подключения станции к сети...")
+            for attempt in range(10):
+                time.sleep(10)
+                stations = find_station(subnet)
+                if stations:
+                    station_ip = stations[0]
+                    ok(f"нашёл: {WHITE}{station_ip}{RST}")
+                    break
+                sys.stdout.write(f"\r  {GRAY}[·]{RST} попытка {attempt+2}/10...")
+                sys.stdout.flush()
+            print()
+
+    if not station_ip:
+        err("станция не найдена")
+        stop_stand()
+        sys.exit(1)
+
+    # ── 4. Wait for ADB ──
+    step(4, TOTAL, "ожидание ADB")
+
+    info("станция должна получить sync с adbd=true и открыть :5555")
+    info("это может занять 1-5 минут...")
+
+    # tail server log in background
+    log_path = os.path.join(BASE, "log", "server.log")
+    stop_log = threading.Event()
+    if os.path.exists(log_path):
+        log_thread = threading.Thread(target=tail_log, args=(log_path, stop_log), daemon=True)
+        log_thread.start()
+
+    if wait_adb(station_ip, timeout=300):
+        print()
+        ok(f"ADB открыт на {station_ip}:5555")
+        stop_log.set()
+    else:
+        stop_log.set()
+        err("таймаут ожидания ADB (5 минут)")
+        if not ask("продолжить? может, порт уже открыт", "n"):
+            stop_stand()
+            sys.exit(1)
+
+    # ── 5. Connect & root ──
+    step(5, TOTAL, "подключение и настройка")
+
+    if adb_connect(station_ip):
+        ok("ADB подключён, root доступ ✓")
+    else:
+        err("не удалось подключиться по ADB")
+        stop_stand()
+        sys.exit(1)
+
+    # firmware version
+    r = run(f"adb -s {station_ip}:5555 shell cat /system/vendor/quasar/version_full")
+    fw_version = r.stdout.strip()
+    if fw_version:
+        info(f"прошивка: {WHITE}{fw_version}{RST}")
+        if check_firmware_risk(fw_version):
+            warn(f"прошивка {fw_version} может быть пропатчена!")
+            warn("рут может не сработать на свежих версиях")
+            if not ask("продолжить всё равно?", "n"):
+                stop_stand()
+                sys.exit(1)
+
+    # backup before changes
+    if ask("сделать бэкап перед изменениями?"):
+        backup_station(station_ip, station["id"])
+
+    # persistent ADB marker
+    info("фиксирую ADB маркер (chattr +i)...")
+    run(f"adb -s {station_ip}:5555 shell 'touch /persist/adbd && chattr +i /persist/adbd'")
+    ok("ADB маркер установлен")
+
+    # ── 6. Post-root ──
+    step(6, TOTAL, "пост-рут установка")
+
+    print()
+    actions = [
+        ("dropbear (SSH на :2222)", "dropbear"),
+        ("блокировка обновлений",  "noupdate"),
+        ("yse/Entware",            "yse"),
+    ]
+    if station.get("led"):
+        actions.append(("LED-панель",  "ledpanel"))
+
+    info("выбери что установить:")
+    print()
+    chosen = checkbox_select(actions, defaults=[True, True, True] + ([True] if station.get("led") else []))
+
+    installers = {
+        "dropbear": install_dropbear,
+        "noupdate": install_noupdate,
+        "yse":      install_yse,
+        "ledpanel": install_ledpanel,
+    }
+    for i, (label, key) in enumerate(actions):
+        if chosen[i]:
+            installers[key](station_ip)
+
+    # ── 7. Healthcheck ──
+    step(7, TOTAL, "проверка")
+    if ask("запустить проверку?"):
+        healthcheck(station_ip, station)
+
+    # ── done ──
+    stop_stand()
+    print()
+    print(f"  {GREEN}{BOLD}{'━' * 40}{RST}")
+    print()
+    ok(f"{WHITE}{station['name']}{RST} ({station_ip}) рутована!")
+    print()
+    info(f"ADB:  {WHITE}adb connect {station_ip}:5555{RST}")
+    info(f"SSH:  {WHITE}ssh -p 2222 root@{station_ip}{RST}")
+    if station.get("led"):
+        info(f"LED:  {WHITE}http://{station_ip}:8080{RST}")
+    print()
+    print(f"  {DIM}metoinc develop × hackisa{RST}")
+    print()
+    input(f"  {GRAY}[Enter]{RST} назад в меню ")
+
+
+# ── post-root installers ──
+
+def install_dropbear(ip):
+    info("устанавливаю Dropbear SSH...")
+    ext_repo = os.path.join(os.path.dirname(BASE), "yandex-station-extended")
+    db_bin = os.path.join(ext_repo, "dropbear", "aarch64", "dropbear")
+    dbkey_bin = os.path.join(ext_repo, "dropbear", "aarch64", "dropbearkey")
+
+    if not os.path.exists(db_bin):
+        warn(f"не найден {db_bin}")
+        warn("склонируй yandex-station-extended рядом с lite-kit")
+        return
+
+    run(f"adb -s {ip}:5555 shell mkdir -p /data/opt/bin /data/opt/etc/dropbear")
+    run(f"adb -s {ip}:5555 push {db_bin} /data/opt/bin/dropbear")
+    run(f"adb -s {ip}:5555 push {dbkey_bin} /data/opt/bin/dropbearkey")
+    run(f"adb -s {ip}:5555 shell chmod +x /data/opt/bin/dropbear /data/opt/bin/dropbearkey")
+
+    init_script = '''#!/bin/sh
+DB=/data/opt/bin/dropbear
+DIR=/data/opt/etc/dropbear
+HK=$DIR/hk_ed25519
+start() {
+  [ -x "$DB" ] || return 1
+  [ -s "$HK" ] || /data/opt/bin/dropbearkey -t ed25519 -f "$HK" 2>/dev/null || return 1
+  pidof dropbear >/dev/null 2>&1 && return 0
+  "$DB" -r "$HK" -p 2222 -B
+}
+case "$1" in
+  start)   start ;;
+  stop)    killall dropbear 2>/dev/null ;;
+  restart) killall dropbear 2>/dev/null; sleep 1; start ;;
+esac
+exit 0'''
+
+    run(f"adb -s {ip}:5555 shell mount -o remount,rw /")
+    run(f"adb -s {ip}:5555 shell 'cat > /etc/init.d/S99zdropbear << \"DEOF\"\n{init_script}\nDEOF'")
+    run(f"adb -s {ip}:5555 shell chmod +x /etc/init.d/S99zdropbear")
+    run(f"adb -s {ip}:5555 shell /etc/init.d/S99zdropbear start")
+    run(f"adb -s {ip}:5555 shell mount -o remount,ro /")
+
+    ok("Dropbear SSH установлен (порт 2222, пароль пустой)")
+
+def install_noupdate(ip):
+    info("блокирую обновления...")
+    ext_repo = os.path.join(os.path.dirname(BASE), "yandex-station-extended")
+    script = os.path.join(ext_repo, "yandex-noupdate.sh")
+
+    if os.path.exists(script):
+        run(f"adb -s {ip}:5555 push {script} /data/opt/yandex-noupdate.sh")
+        run(f"adb -s {ip}:5555 shell chmod +x /data/opt/yandex-noupdate.sh")
+        run(f"adb -s {ip}:5555 shell sh /data/opt/yandex-noupdate.sh")
+    else:
+        # fallback: manual block
+        run(f"adb -s {ip}:5555 shell mount -o remount,rw /")
+        run(f"adb -s {ip}:5555 shell 'rm -f /usr/bin/updatesd 2>/dev/null; echo \"#!/bin/sh\" > /usr/bin/ota_updater; chmod +x /usr/bin/ota_updater'")
+        run(f"adb -s {ip}:5555 shell mount -o remount,ro /")
+
+    ok("обновления заблокированы")
+
+def install_yse(ip):
+    info("устанавливаю yse/Entware...")
+    ext_repo = os.path.join(os.path.dirname(BASE), "yandex-station-extended")
+    yse_script = os.path.join(ext_repo, "install-yse.sh")
+
+    if os.path.exists(yse_script):
+        run(f"adb -s {ip}:5555 push {yse_script} /data/opt/install-yse.sh")
+        run(f"adb -s {ip}:5555 shell chmod +x /data/opt/install-yse.sh && sh /data/opt/install-yse.sh", timeout=120)
+        ok("yse/Entware установлен")
+    else:
+        warn("install-yse.sh не найден — установи вручную")
+
+def install_ledpanel(ip):
+    info("устанавливаю LED-панель...")
+    panel = os.path.join(BASE, "led-panel.py")
+    if not os.path.exists(panel):
+        warn("led-panel.py не найден")
+        return
+
+    # need python3 on station
+    r = run(f"adb -s {ip}:5555 shell ls /opt/bin/python3")
+    if r.returncode != 0:
+        warn("python3 не установлен на станции — сначала установи yse и python3")
+        return
+
+    run(f"adb -s {ip}:5555 push {panel} /data/opt/led-panel.py")
+
+    init_script = '''#!/bin/sh
+DAEMON=/opt/bin/python3
+SCRIPT=/data/opt/led-panel.py
+start() {
+    [ -x "$DAEMON" ] || return 1
+    [ -f "$SCRIPT" ] || return 1
+    pidof python3 | grep -q . && return 0
+    "$DAEMON" "$SCRIPT" >> /data/opt/led-panel.log 2>&1 &
+}
+stop() { killall python3 2>/dev/null; }
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; sleep 1; start ;;
+esac
+exit 0'''
+
+    run(f"adb -s {ip}:5555 shell mount -o remount,rw /")
+    run(f"adb -s {ip}:5555 shell 'cat > /etc/init.d/S98ledpanel << \"LEOF\"\n{init_script}\nLEOF'")
+    run(f"adb -s {ip}:5555 shell chmod +x /etc/init.d/S98ledpanel")
+    run(f"adb -s {ip}:5555 shell /etc/init.d/S98ledpanel start")
+    run(f"adb -s {ip}:5555 shell mount -o remount,ro /")
+
+    ok(f"LED-панель запущена — http://{ip}:8080")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n  {YELLOW}[!]{RST} отменено")
+        sys.exit(0)

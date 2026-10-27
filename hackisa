@@ -3,10 +3,17 @@
 hackisa — interactive CLI for rooting Yandex Stations.
 metoinc develop × hackisa
 """
-import os, sys, time, subprocess, shutil, socket, struct, re, signal, threading, termios, tty, platform
+import os, sys, time, subprocess, shutil, socket, struct, re, signal, threading, platform
 
 IS_LINUX = platform.system() == "Linux"
 IS_MAC   = platform.system() == "Darwin"
+IS_WIN   = platform.system() == "Windows"
+
+if IS_WIN:
+    import msvcrt
+    os.system("")  # enable ANSI escape codes on Windows 10+
+else:
+    import termios, tty
 
 # ── themes ──
 THEMES = {
@@ -487,14 +494,26 @@ def show_station_art(station_id):
 
 
 def _get_arp_lines():
-    if IS_LINUX:
+    if IS_WIN:
+        r = run("arp -a")
+    elif IS_LINUX:
         r = run("ip neigh show")
     else:
         r = run("arp -an")
     return r.stdout.splitlines() if r.returncode == 0 else []
 
 def _get_gateway():
-    if IS_LINUX:
+    if IS_WIN:
+        r = run("route print 0.0.0.0")
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                if "0.0.0.0" in line:
+                    parts = line.split()
+                    for p in parts:
+                        m = re.match(r'(\d+\.\d+\.\d+\.\d+)', p)
+                        if m and p != "0.0.0.0":
+                            return m.group(1)
+    elif IS_LINUX:
         r = run("ip route show default")
         if r.returncode == 0:
             m = re.search(r'default via (\d+\.\d+\.\d+\.\d+)', r.stdout)
@@ -519,7 +538,7 @@ def show_network_map(my_ip, found_ips, subnet):
         mac = "?"
         for line in arp_lines:
             if sip in line:
-                m = re.search(r'([\da-f:]{11,17})', line, re.IGNORECASE)
+                m = re.search(r'([\da-f:\-]{11,17})', line, re.IGNORECASE)
                 if m:
                     mac = m.group(1)
                 break
@@ -555,31 +574,50 @@ def checkbox_select(items, defaults=None):
         pointer = f"{WHITE}{BOLD}›{RST}" if i == cursor else " "
         print(f"  {pointer} [{check}] {label}{RST}")
 
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
+    if IS_WIN:
         while True:
-            ch = sys.stdin.read(1)
-            if ch == "\r" or ch == "\n":
+            key = msvcrt.getwch()
+            if key in ("\r", "\n"):
                 break
-            if ch == " ":
+            if key == " ":
                 selected[cursor] = not selected[cursor]
                 render()
-            elif ch == "\x1b":
-                ch2 = sys.stdin.read(1)
-                if ch2 == "[":
-                    ch3 = sys.stdin.read(1)
-                    if ch3 == "A" and cursor > 0:
-                        cursor -= 1
-                        render()
-                    elif ch3 == "B" and cursor < len(items) - 1:
-                        cursor += 1
-                        render()
-            elif ch == "\x03":
+            elif key == "\xe0" or key == "\x00":
+                arrow = msvcrt.getwch()
+                if arrow == "H" and cursor > 0:
+                    cursor -= 1
+                    render()
+                elif arrow == "P" and cursor < len(items) - 1:
+                    cursor += 1
+                    render()
+            elif key == "\x03":
                 raise KeyboardInterrupt
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    else:
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while True:
+                ch = sys.stdin.read(1)
+                if ch == "\r" or ch == "\n":
+                    break
+                if ch == " ":
+                    selected[cursor] = not selected[cursor]
+                    render()
+                elif ch == "\x1b":
+                    ch2 = sys.stdin.read(1)
+                    if ch2 == "[":
+                        ch3 = sys.stdin.read(1)
+                        if ch3 == "A" and cursor > 0:
+                            cursor -= 1
+                            render()
+                        elif ch3 == "B" and cursor < len(items) - 1:
+                            cursor += 1
+                            render()
+                elif ch == "\x03":
+                    raise KeyboardInterrupt
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
     print()
     return selected
@@ -722,13 +760,18 @@ def get_local_ip():
         return None
 
 def find_station(subnet):
-    """Scan subnet for Yandex Station (MAC b8:87:6e)."""
+    """Scan subnet for Yandex Station (MAC b8:87:6e or b8-87-6e)."""
     spin = Spinner(f"сканирую {subnet}.0/24...").start()
-    ping_timeout = "-W1" if IS_LINUX else "-W150"
+    if IS_WIN:
+        ping_args = lambda ip: ["ping", "-n", "1", "-w", "150", ip]
+    elif IS_LINUX:
+        ping_args = lambda ip: ["ping", "-c1", "-W1", ip]
+    else:
+        ping_args = lambda ip: ["ping", "-c1", "-W150", ip]
     procs = []
     for i in range(2, 255):
         p = subprocess.Popen(
-            ["ping", "-c1", ping_timeout, f"{subnet}.{i}"],
+            ping_args(f"{subnet}.{i}"),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         procs.append(p)
@@ -739,7 +782,8 @@ def find_station(subnet):
     arp_lines = _get_arp_lines()
     ips = []
     for line in arp_lines:
-        if "b8:87:6e" in line.lower():
+        ll = line.lower()
+        if "b8:87:6e" in ll or "b8-87-6e" in ll:
             m = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
             if m:
                 ips.append(m.group(1))
@@ -1166,11 +1210,13 @@ def root_station():
     step(1, TOTAL, "проверка окружения")
 
     checks = {
-        "python3": has("python3"),
+        "python3": has("python3") or has("python"),
         "adb":     has("adb"),
         "dnsmasq": has("dnsmasq") or (IS_MAC and os.path.exists("/opt/homebrew/sbin/dnsmasq")),
-        "dig":     has("dig"),
+        "dig":     has("dig") or has("nslookup"),
     }
+    if IS_WIN:
+        del checks["dnsmasq"]
     all_ok = True
     for name, found in checks.items():
         if found:
@@ -1223,13 +1269,15 @@ def root_station():
         info(f"  {WHITE}firmware/{platform}/<версия>.zip{RST}")
         info(f"прошивки можно найти на {CYAN}hackalice.me{RST} или в Telegram-чатах")
 
-    if not checks["dnsmasq"]:
+    if "dnsmasq" in checks and not checks["dnsmasq"]:
         if IS_LINUX:
             warn("dnsmasq не найден — sudo apt install dnsmasq (нужен для стенда)")
         else:
             warn("dnsmasq не найден — brew install dnsmasq (нужен для стенда)")
     if not checks["adb"]:
-        if IS_LINUX:
+        if IS_WIN:
+            err("установи adb: scoop install adb / choco install adb")
+        elif IS_LINUX:
             err("установи adb: sudo apt install adb")
         else:
             err("установи adb: brew install android-platform-tools")

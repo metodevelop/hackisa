@@ -1,4 +1,79 @@
-# Yandex Station — root / ADB kit (Windows · Linux · macOS)
+# hackisa
+
+> **metoinc develop × hackisa** — интерактивный CLI для рутования Яндекс Станций
+
+![Python](https://img.shields.io/badge/Python-3.8+-blue) ![Version](https://img.shields.io/badge/version-0.4.0-cyan) ![License](https://img.shields.io/badge/license-MIT-green)
+
+```
+  ██    ██    ████      ██████  ██    ██  ██████    ██████    ████
+  ██    ██  ██    ██  ██        ██  ██      ██    ██        ██    ██
+  ████████  ████████  ██        ████        ██      ████    ████████
+  ██    ██  ██    ██  ██        ██  ██      ██          ██  ██    ██
+  ██    ██  ██    ██    ██████  ██    ██  ██████  ██████    ██    ██
+```
+
+Графическая обёртка над [lite-kit](https://github.com/krevetkqqq/lite-kit) (eQuasar стенд) для рутования Яндекс Станций через DNS-перехват. Полный гайд: [hackalice.me](https://hackalice.me)
+
+## Возможности
+
+- 🎯 **7-шаговый пайплайн** — от проверки окружения до healthcheck
+- 📊 **Прогресс-бар** с процентами и braille-спиннер
+- 🎨 **Truecolor ASCII-арт** каждой станции при выборе
+- 🗺️ **Карта сети** — визуализация найденных устройств
+- ☑️ **Интерактивные чекбоксы** для выбора пост-рут пакетов
+- 🎭 **4 темы** — Default, Hacker, Sunset, Minimal
+- 🔧 **9 SSH quick commands** — shell, reboot, логи, статус, uptime...
+- 💾 **Бэкап** /system и /persist перед изменениями
+- 🛡️ **Проверка прошивки** — предупреждение о патченных версиях
+- 📋 **Лог сессии** — полный вывод без ANSI-кодов
+- ✅ **Healthcheck** — проверка ADB, маркера, SSH, обновлений, LED
+- 🛑 **Автоостановка стенда** при ошибках и Ctrl+C
+
+## Поддерживаемые станции
+
+| Станция | Метод | LED | Статус |
+|---|---|---|---|
+| Лайт 1 (Micro) | DNS-стенд | ✓ | ✅ |
+| Лайт 2 (Plum) | retail CA | ✓ | ✅ |
+| Мини 1/2 | DNS-стенд | ✓ | ✅ |
+| Мини 3 (Bergamot) | retail CA | ✓ | ✅ |
+| Миди (Cucumber) | DNS-стенд | ✓ | ✅ |
+| Станция 1 | AliceBridge | ✓ | ✅ |
+| Станция 2 (Chiron) | DNS-стенд | ✓ | ✅ |
+| Станция 3 (Orion) | DNS-стенд | ✓ | ⚠️ |
+| Стрит (Mango) | DNS-стенд | — | ✅ |
+| Умный хаб (Saturn) | DNS-стенд | — | ✅ |
+| JBL Link Music | USB ADB | — | ✅ |
+| Макс | — | ✓ | ❌ |
+
+## Быстрый старт
+
+```bash
+cd ~/Desktop/lite-kit
+python3 hackisa
+```
+
+## Структура
+
+```
+hackisa              — интерактивный CLI (этот проект)
+mitm-proxy.py        — MITM WebSocket прокси для перехвата TTS
+led-panel.py         — веб-панель управления LED
+rainbow.sh           — радужный LED-эффект
+lite-kit/            — стенд eQuasar (start/stop/check)
+firmware/             — прошивки по платформам
+ascii-station/        — truecolor ASCII-арт станций
+```
+
+## Дополнительные инструменты
+
+- **MITM-прокси** (`mitm-proxy.py`) — перехват WebSocket трафика между станцией и Яндексом, захват TTS (audio/opus)
+- **LED-панель** (`led-panel.py`) — веб-интерфейс для управления LED-кольцом
+- **Rainbow** (`rainbow.sh`) — радужный эффект для LED
+
+---
+
+# lite-kit — стенд eQuasar
 
 Стенд для получения ADB/root на **своей** Яндекс Станции в домашней сети.
 Поднимает DNS + HTTPS, в ответ на `/get_sync_info` отдаёт
